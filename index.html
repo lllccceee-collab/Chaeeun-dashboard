@@ -3248,6 +3248,14 @@ window.pxiSvg = (function () {
     syncFallbackCopy(link);
   }
 
+  function syncClearHash() {
+    try {
+      if (typeof history === 'undefined' || !history.replaceState) return;
+      if (!location.hash) return;
+      history.replaceState(null, '', location.pathname + location.search);
+    } catch (e) { }
+  }
+
   function syncReadHash() {
     var h = String((typeof location !== 'undefined' && location.hash) || '');
     var m = h.match(/[#&]sync=([^&]*)/);
@@ -3257,11 +3265,9 @@ window.pxiSvg = (function () {
       var obj = JSON.parse(syncB64Decode(m[1]));
       if (obj && typeof obj.url === 'string' && obj.key && obj.url) cfg = { url: obj.url, key: String(obj.key) };
     } catch (e) { cfg = null; }
-    try {
-      if (typeof history !== 'undefined' && history.replaceState) {
-        history.replaceState(null, '', location.pathname + location.search);
-      }
-    } catch (e) { }
+    syncClearHash();
+    setTimeout(syncClearHash, 400);
+    setTimeout(syncClearHash, 1500);
     if (!cfg) { toast('연동 링크를 읽을 수 없어요. 링크를 다시 열어 주세요'); return false; }
     syncStoreCfg(cfg);
     setTimeout(function () { toast('☁️ 이 기기와 연결했어요! 이제 자동으로 동기화돼요', null, null, 4200); }, 500);
