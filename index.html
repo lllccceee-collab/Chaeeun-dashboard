@@ -2187,6 +2187,41 @@ body,.brand,.hdr-meta,
   .sync-pill .sp-txt{display:none}
 }
 
+/* ============================================================
+   2026-11-26 v5 · 아이폰 상단 날짜 잘림·흐림 수정 🍀
+   · 헤더 위에 숨 쉴 여백 + 안전영역(safe-area) 확보
+     → 날짜가 창틀(이중 점선)에 걸리거나 상태바에 가리지 않게
+   · 날짜를 흰 스티커 위에 진한 잉크색으로
+     → 모눈종이·점선과 겹쳐 뿌옇게 보이던 문제 해결
+   · 휴대폰은 글자 안티에일리어싱을 기본값으로
+     → 작은 도트 글씨가 얇게 뭉개지지 않게 (내가 적는 글씨는 그대로 고딕)
+   ============================================================ */
+@media (max-width:560px){
+  /* 창틀 위쪽 여백 + 아이폰 노치·홈바 안전영역 */
+  .app{
+    padding-top:calc(20px + env(safe-area-inset-top, 0px));
+    padding-bottom:calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+  .app-header{padding-top:2px}
+
+  /* 맨 위 날짜: 흰 스티커 + 진한 색 */
+  .date-ko{
+    display:inline-block;
+    font-size:16px;line-height:1.35;letter-spacing:0;
+    color:#33513C;
+    padding:4px 11px 5px;
+    border-radius:13px;
+    border:1.5px dashed var(--dash);
+    background:linear-gradient(160deg,#FFFFFF 0%,#F6FDEF 100%);
+    box-shadow:0 1px 0 #fff inset, 0 3px 9px rgba(64,140,100,.10);
+    white-space:nowrap;
+  }
+
+  /* 휴대폰에서는 도트 글씨를 조금 더 또렷하게 */
+  body,.date-ko,.tab,.card-title,.card-sub,.pill,.chip,.btn,.mission-foot .switch,
+  .empty,.progress-pill,.lb,.cal-weekdays span{-webkit-font-smoothing:auto}
+}
+
 </style>
 </head>
 <body>
