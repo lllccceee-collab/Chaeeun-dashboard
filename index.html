@@ -3281,6 +3281,14 @@ window.pxiSvg = (function () {
     try { sync.lastJson = JSON.stringify(state); } catch (e) { sync.lastJson = ''; }
     syncSetStatus(sync.cfg ? 'ok' : 'off');
 
+    window.addEventListener('hashchange', function () {
+      // 이미 대시보드가 열린 탭에서 연동 링크를 눌러 해시만 바뀐 경우
+      if (!syncReadHash()) return;
+      sync.cfg = syncLoadCfg();
+      sync.ready = false;
+      syncSetStatus('ok');
+      if (sync.cfg) syncPull(false);
+    });
     window.addEventListener('focus', function () {
       if (!sync.cfg || sync.busy) return;
       if (sync.meta.dirty) syncSchedulePush();
