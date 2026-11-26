@@ -2156,6 +2156,35 @@ body,.brand,.hdr-meta,
   .mission-board .m-actions{right:5px;bottom:4px}
 }
 
+/* ---------- ☁️ 구글 드라이브 자동 동기화 ---------- */
+.sync-pill{
+  gap:6px;padding:0 13px;cursor:pointer;font-family:inherit;
+  font-size:14px;font-weight:800;color:var(--green-deep);
+  background:linear-gradient(155deg,#FBFFF6,#EDFAF1);
+  transition:transform .12s ease, background .2s ease;
+}
+.sync-pill:active{transform:scale(.96)}
+.sync-pill .sp-icon{font-size:16px;line-height:1;display:inline-block}
+.sync-pill.is-saving{background:linear-gradient(155deg,#FFFCF0,#F0F7FF);color:#4A7BA8}
+.sync-pill.is-saving .sp-icon{animation:syncSpin 1.2s linear infinite}
+.sync-pill.is-err{background:#FFF6F1;border-color:#F0C4B2;color:#B4573A}
+@keyframes syncSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+.sync-state-line{
+  margin-top:9px;font-size:11.5px;color:var(--muted);
+  font-weight:650;line-height:1.5;word-break:break-all;
+}
+.sync-link-box{
+  margin-top:8px;padding:9px 10px;
+  border:1.5px dashed var(--dash);border-radius:11px;
+  background:#FBFFF7;color:var(--ink-2);
+  font-size:11px;line-height:1.5;word-break:break-all;
+  user-select:all;-webkit-user-select:all;
+}
+@media (max-width:560px){
+  .sync-pill{padding:0 10px;font-size:12.5px}
+  .sync-pill .sp-txt{display:none}
+}
+
 </style>
 </head>
 <body>
@@ -2186,6 +2215,9 @@ body,.brand,.hdr-meta,
         <span class="w-temp" id="weatherTemp">—</span>
         <span class="w-desc" id="weatherDesc">맑음</span>
       </div>
+      <button class="pill sync-pill" id="syncPill" hidden title="구글 드라이브 자동 동기화">
+        <span class="sp-icon" id="syncIcon">☁️</span><span class="sp-txt" id="syncText">동기화됨</span>
+      </button>
       <button class="btn-icon" id="btnSettings" aria-label="설정과 백업" title="설정 · 백업">⚙️</button>
     </div>
   </header>
@@ -2531,6 +2563,16 @@ body,.brand,.hdr-meta,
     </div>
     <div class="modal-body">
       <div class="sec">
+        <div class="sec-title">☁️ 기기 간 자동 동기화</div>
+        <div class="sec-desc" id="syncDesc">연동 링크를 한 번 열면 아이패드 · 아이폰 · 노트북이 같은 기록을 함께 써요.</div>
+        <div class="sec-actions">
+          <button class="btn btn-primary" id="syncNowBtn">지금 동기화</button>
+          <button class="btn btn-ghost" id="syncLinkBtn">연동 링크 복사</button>
+        </div>
+        <div class="sync-state-line" id="syncStateLine">아직 연동되지 않았어요</div>
+        <div class="sync-link-box" id="syncLinkBox" hidden></div>
+      </div>
+      <div class="sec">
         <div class="sec-title">💾 기록 백업</div>
         <div class="sec-desc">아이패드를 바꾸거나 파일을 새로 받을 때, 지금까지의 기록을 파일로 내보내고 다시 불러올 수 있어요.</div>
         <div class="sec-actions">
@@ -2558,7 +2600,7 @@ body,.brand,.hdr-meta,
       </div>
       <div class="sec">
         <div class="sec-title">🗂️ 기록 관리</div>
-        <div class="sec-desc">모든 기록은 이 기기의 브라우저에만 저장돼요. 서버로 보내지 않아요.</div>
+        <div class="sec-desc">모든 기록은 이 기기 브라우저에 저장되고, 연동하면 채은님 구글 드라이브의 비공개 파일에도 저장돼요.</div>
         <div class="sec-actions">
           <button class="btn btn-ghost danger" id="resetBtn">모든 기록 지우기</button>
         </div>
@@ -2856,7 +2898,9 @@ window.pxiSvg = (function () {
       localStorage.setItem(STORE_KEY, JSON.stringify(state));
     } catch (e) {
       toast('저장 공간이 부족해 저장하지 못했어요');
+      return;
     }
+    syncLocalChanged();
   }
   function scheduleSave() {
     if (saveTimer) clearTimeout(saveTimer);
@@ -2869,6 +2913,396 @@ window.pxiSvg = (function () {
       return normalize(JSON.parse(raw));
     } catch (e) {
       return newState();
+    }
+  }
+
+  /* ============================================================
+     ☁️ 구글 드라이브 자동 동기화 (Apps Script 웹 앱)
+     - 설정은 localStorage['chaeeunSyncConfig.v1'] 에만 둔다 (공개 HTML에 키 없음)
+     - #sync=<base64url({url,key})> 링크를 한 번 열면 자동 연결
+     ============================================================ */
+  var SYNC_CFG_KEY = 'chaeeunSyncConfig.v1';
+  var SYNC_META_KEY = 'chaeeunSyncMeta.v1';
+  var SYNC_BACKUP_KEY = 'chaeeunDashboard.backup.v1';
+  var SYNC_PAGE_URL = 'https://lllccceee-collab.github.io/Chaeeun-dashboard/';
+  var SYNC_POLL_MS = 60000;
+  var sync = {
+    cfg: null,
+    meta: { localAt: 0, seen: '', rev: 0, dirty: false },
+    ready: false,
+    applying: false,
+    busy: false,
+    pending: false,
+    lastError: '',
+    lastOkAt: 0,
+    timer: null,
+    pollTimer: null,
+    lastJson: ''
+  };
+
+  function syncLoadCfg() {
+    try {
+      var raw = localStorage.getItem(SYNC_CFG_KEY);
+      if (!raw) return null;
+      var c = JSON.parse(raw);
+      if (c && typeof c.url === 'string' && c.url && typeof c.key === 'string' && c.key) {
+        return { url: c.url, key: c.key };
+      }
+    } catch (e) { }
+    return null;
+  }
+  function syncStoreCfg(c) {
+    try { localStorage.setItem(SYNC_CFG_KEY, JSON.stringify(c)); } catch (e) { }
+  }
+  function syncLoadMeta() {
+    try {
+      var raw = localStorage.getItem(SYNC_META_KEY);
+      var m = raw ? JSON.parse(raw) : null;
+      if (m && typeof m === 'object') {
+        sync.meta.localAt = num(m.localAt);
+        sync.meta.seen = typeof m.seen === 'string' ? m.seen : '';
+        sync.meta.rev = num(m.rev);
+        sync.meta.dirty = !!m.dirty;
+      }
+    } catch (e) { }
+  }
+  function syncStoreMeta() {
+    try { localStorage.setItem(SYNC_META_KEY, JSON.stringify(sync.meta)); } catch (e) { }
+  }
+  function syncB64Encode(str) {
+    var b64 = btoa(unescape(encodeURIComponent(str)));
+    return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function syncB64Decode(s) {
+    var b64 = String(s).replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    return decodeURIComponent(escape(atob(b64)));
+  }
+  function syncHasData(s) {
+    if (!s || typeof s !== 'object') return false;
+    var m = s.missions || {};
+    if (Object.keys(m).some(function (k) { return (m[k] || []).length > 0; })) return true;
+    if ((s.ledger || []).length) return true;
+    if ((s.events || []).length) return true;
+    if ((s.shopping || []).length) return true;
+    var meals = s.meals || {};
+    if (Object.keys(meals).some(function (k) {
+      var row = meals[k] || {};
+      return Object.keys(row).some(function (r) { return !!row[r]; });
+    })) return true;
+    var memos = s.memos || {};
+    if (Object.keys(memos).some(function (k) { return !!memos[k]; })) return true;
+    if (Object.keys(s.budget || {}).length) return true;
+    return false;
+  }
+  function syncTimeLabel(ts) {
+    try {
+      var d = new Date(ts);
+      var h = d.getHours();
+      var ampm = h < 12 ? '오전' : '오후';
+      var h12 = h % 12; if (!h12) h12 = 12;
+      return ampm + ' ' + h12 + ':' + pad(d.getMinutes());
+    } catch (e) { return ''; }
+  }
+
+  function syncPaintSettings() {
+    var desc = $('syncDesc'), line = $('syncStateLine');
+    if (!desc || !line) return;
+    if (!sync.cfg) {
+      desc.textContent = '연동 링크를 한 번 열면 아이패드 · 아이폰 · 노트북이 같은 기록을 함께 써요. 기록은 채은님 구글 드라이브 안에서만 오가요.';
+      line.textContent = '아직 연동되지 않았어요 · 연동 링크가 필요해요';
+      return;
+    }
+    desc.textContent = '기록이 채은님 구글 드라이브의 비공개 파일(chaeeun-dashboard-sync.json)에 저장돼요. 다른 기기에서 고친 내용은 이 기기로 자동으로 따라와요.';
+    var when = sync.lastOkAt || sync.meta.localAt;
+    line.textContent = (sync.lastError ? '⚠️ ' + sync.lastError : '☁️ 연결됨') + (when ? ' · 마지막 ' + syncTimeLabel(when) : '');
+  }
+
+  function syncSetStatus(kind) {
+    var pill = $('syncPill');
+    if (pill) {
+      if (!sync.cfg) {
+        pill.hidden = true;
+      } else {
+        pill.hidden = false;
+        pill.classList.remove('is-saving', 'is-err');
+        var icon = $('syncIcon'), txt = $('syncText');
+        if (kind === 'saving' || kind === 'checking') {
+          pill.classList.add('is-saving');
+          if (icon) icon.textContent = '🔄';
+          if (txt) txt.textContent = kind === 'saving' ? '저장 중' : '확인 중';
+        } else if (kind === 'err') {
+          pill.classList.add('is-err');
+          if (icon) icon.textContent = '💾';
+          if (txt) txt.textContent = '이 기기에 저장';
+        } else {
+          if (icon) icon.textContent = '☁️';
+          if (txt) txt.textContent = '동기화됨';
+        }
+        pill.title = '구글 드라이브 자동 동기화' + (sync.lastError ? ' · ' + sync.lastError : '');
+      }
+    }
+    syncPaintSettings();
+  }
+
+  function syncFailure(msg) {
+    sync.lastError = msg;
+    syncSetStatus('err');
+  }
+
+  function syncLocalChanged() {
+    var json;
+    try { json = JSON.stringify(state); } catch (e) { return; }
+    if (json === sync.lastJson) return;
+    sync.lastJson = json;
+    if (sync.applying) return;
+    sync.meta.localAt = Date.now();
+    if (sync.cfg && sync.ready) {
+      sync.meta.dirty = true;
+      syncSchedulePush();
+    }
+    syncStoreMeta();
+  }
+
+  function syncSchedulePush() {
+    if (!sync.cfg || !sync.ready) return;
+    syncSetStatus('saving');
+    if (sync.timer) clearTimeout(sync.timer);
+    sync.timer = setTimeout(function () {
+      sync.timer = null;
+      syncPush(false).then(function (ok) {
+        if (!ok && sync.meta.dirty) {
+          setTimeout(function () {
+            if (sync.meta.dirty && !sync.busy) syncPush(false);
+          }, 8000);
+        }
+      });
+    }, 700);
+  }
+
+  function syncPush(manual) {
+    if (!sync.cfg) return Promise.resolve(false);
+    if (!sync.ready) return syncPull(false);
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      syncFailure('오프라인 · 이 기기에 저장했어요');
+      return Promise.resolve(false);
+    }
+    if (sync.busy) { sync.pending = true; return Promise.resolve(false); }
+    sync.busy = true;
+    syncSetStatus('saving');
+    var payload = JSON.stringify({ key: sync.cfg.key, data: state, baseRev: sync.meta.rev });
+    return fetch(sync.cfg.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: payload,
+      redirect: 'follow',
+      cache: 'no-store'
+    }).then(function (r) {
+      return r.text();
+    }).then(function (txt) {
+      var res = null;
+      try { res = JSON.parse(txt); } catch (e) { res = null; }
+      if (res && res.ok === false) {
+        if (res.error === 'unauthorized') sync.ready = false;
+        syncFailure(res.error === 'unauthorized' ? '연동 키가 맞지 않아요' : '저장하지 못했어요');
+        return false;
+      }
+      sync.meta.dirty = false;
+      sync.lastOkAt = Date.now();
+      sync.lastError = '';
+      if (res && res.updatedAt) {
+        sync.meta.seen = String(res.updatedAt);
+        sync.meta.rev = num(res.rev);
+        sync.meta.localAt = Date.parse(res.updatedAt) || sync.meta.localAt;
+      }
+      syncStoreMeta();
+      syncSetStatus('ok');
+      if (manual) toast('☁️ 동기화했어요');
+      return true;
+    }).catch(function () {
+      syncFailure('연결이 잠깐 끊겼어요 · 이 기기에 저장됨');
+      return false;
+    }).then(function (ok) {
+      sync.busy = false;
+      if (sync.pending) { sync.pending = false; syncSchedulePush(); }
+      return ok;
+    });
+  }
+
+  function syncPull(manual) {
+    if (!sync.cfg) {
+      if (manual) toast('아직 연동되지 않았어요');
+      return Promise.resolve(false);
+    }
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      syncFailure('오프라인 · 이 기기에 저장했어요');
+      return Promise.resolve(false);
+    }
+    if (sync.busy) return Promise.resolve(false);
+    sync.busy = true;
+    syncSetStatus(sync.meta.dirty ? 'saving' : 'checking');
+    var url = sync.cfg.url + (sync.cfg.url.indexOf('?') === -1 ? '?' : '&') +
+      'key=' + encodeURIComponent(sync.cfg.key) + '&t=' + Date.now();
+    return fetch(url, { method: 'GET', cache: 'no-store', redirect: 'follow' })
+      .then(function (r) { return r.text(); })
+      .then(function (txt) {
+        var res = null;
+        try { res = JSON.parse(txt); } catch (e) { res = null; }
+        if (!res || !res.ok) {
+          if (res && res.error === 'unauthorized') {
+            sync.ready = false;
+            syncFailure('연동 키가 맞지 않아요');
+          } else {
+            syncFailure('불러오지 못했어요 · 이 기기에 저장됨');
+          }
+          return false;
+        }
+        sync.ready = true;
+        sync.lastOkAt = Date.now();
+        sync.lastError = '';
+        var changed = false;
+        if (res.data && typeof res.data === 'object') {
+          var remoteAt = Date.parse(res.updatedAt) || 0;
+          var seenSame = !!res.updatedAt && String(res.updatedAt) === String(sync.meta.seen);
+          var adopt = false;
+          if (!seenSame) {
+            if (!syncHasData(state) || !sync.meta.localAt) adopt = true;
+            else if (remoteAt && remoteAt > sync.meta.localAt) adopt = true;
+          }
+          if (adopt) {
+            try { localStorage.setItem(SYNC_BACKUP_KEY, JSON.stringify(state)); } catch (e) { }
+            sync.applying = true;
+            state = normalize(res.data);
+            sync.applying = false;
+            sync.meta.localAt = remoteAt || Date.now();
+            sync.meta.dirty = false;
+            try {
+              localStorage.setItem(STORE_KEY, JSON.stringify(state));
+            } catch (e) { }
+            sync.lastJson = JSON.stringify(state);
+            renderAll();
+            if ($('settingsModal') && !$('settingsModal').hidden) renderChipEditor();
+            changed = true;
+          }
+          sync.meta.seen = String(res.updatedAt || sync.meta.seen);
+          sync.meta.rev = num(res.rev);
+        }
+        syncStoreMeta();
+        syncSetStatus('ok');
+        if (changed) toast('☁️ 다른 기기의 기록을 불러왔어요');
+        else if (manual) toast('☁️ 최신 상태예요');
+        return changed;
+      })
+      .catch(function () {
+        syncFailure('연결이 잠깐 끊겼어요 · 이 기기에 저장됨');
+        return false;
+      })
+      .then(function (r) {
+        sync.busy = false;
+        return r;
+      });
+  }
+
+  function syncNow() {
+    if (!sync.cfg) { toast('연동 링크로 한 번 열면 자동으로 연결돼요'); return; }
+    if (sync.busy) { toast('조금만 기다려 주세요'); return; }
+    if (sync.meta.dirty) {
+      syncPush(true).then(function (ok) { if (ok) syncPull(false); });
+    } else {
+      syncPull(true);
+    }
+  }
+
+  function syncMagicLink() {
+    if (!sync.cfg) return '';
+    return SYNC_PAGE_URL + '#sync=' + syncB64Encode(JSON.stringify({ url: sync.cfg.url, key: sync.cfg.key }));
+  }
+  function syncFallbackCopy(link) {
+    var box = $('syncLinkBox');
+    if (box) { box.hidden = false; box.textContent = link; }
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = link;
+      ta.setAttribute('readonly', 'readonly');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (ok) { toast('🔗 연동 링크를 복사했어요'); return; }
+    } catch (e) { }
+    toast('아래 링크를 길게 눌러 복사해 주세요', null, null, 4200);
+  }
+  function syncCopyLink() {
+    var link = syncMagicLink();
+    if (!link) { toast('아직 연동되지 않았어요'); return; }
+    var box = $('syncLinkBox');
+    if (box) { box.hidden = true; box.textContent = ''; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(link).then(function () {
+        toast('🔗 연동 링크를 복사했어요 · 새 기기에서 한 번만 열면 돼요', null, null, 4200);
+      }, function () { syncFallbackCopy(link); });
+      return;
+    }
+    syncFallbackCopy(link);
+  }
+
+  function syncReadHash() {
+    var h = String((typeof location !== 'undefined' && location.hash) || '');
+    var m = h.match(/[#&]sync=([^&]*)/);
+    if (!m) return false;
+    var cfg = null;
+    try {
+      var obj = JSON.parse(syncB64Decode(m[1]));
+      if (obj && typeof obj.url === 'string' && obj.key && obj.url) cfg = { url: obj.url, key: String(obj.key) };
+    } catch (e) { cfg = null; }
+    try {
+      if (typeof history !== 'undefined' && history.replaceState) {
+        history.replaceState(null, '', location.pathname + location.search);
+      }
+    } catch (e) { }
+    if (!cfg) { toast('연동 링크를 읽을 수 없어요. 링크를 다시 열어 주세요'); return false; }
+    syncStoreCfg(cfg);
+    setTimeout(function () { toast('☁️ 이 기기와 연결했어요! 이제 자동으로 동기화돼요', null, null, 4200); }, 500);
+    return true;
+  }
+
+  function syncInit() {
+    syncLoadMeta();
+    syncReadHash();
+    sync.cfg = syncLoadCfg();
+    try { sync.lastJson = JSON.stringify(state); } catch (e) { sync.lastJson = ''; }
+    syncSetStatus(sync.cfg ? 'ok' : 'off');
+
+    window.addEventListener('focus', function () {
+      if (!sync.cfg || sync.busy) return;
+      if (sync.meta.dirty) syncSchedulePush();
+      else syncPull(false);
+    });
+    document.addEventListener('visibilitychange', function () {
+      if (!sync.cfg || document.hidden || sync.busy) return;
+      if (sync.meta.dirty) syncSchedulePush();
+      else syncPull(false);
+    });
+    window.addEventListener('online', function () {
+      if (!sync.cfg) return;
+      if (sync.meta.dirty) syncSchedulePush();
+      else syncPull(false);
+    });
+    window.addEventListener('offline', function () {
+      if (sync.cfg) syncFailure('오프라인 · 이 기기에 저장했어요');
+    });
+    if (!sync.pollTimer && typeof setInterval === 'function') {
+      sync.pollTimer = setInterval(function () {
+        if (!sync.cfg || document.hidden || sync.busy || sync.meta.dirty) return;
+        syncPull(false);
+      }, SYNC_POLL_MS);
+    }
+
+    if (sync.cfg) {
+      if (sync.meta.dirty) syncPush(false);
+      else syncPull(false);
     }
   }
 
@@ -4072,6 +4506,7 @@ window.pxiSvg = (function () {
     renderChipEditor();
     var b = num(state.budget[ui.ledMonth]);
     $('settingsBudget').value = b ? fmt(b) : '';
+    syncPaintSettings();
   }
   function closeSettings() { $('settingsModal').hidden = true; }
   function renderChipEditor() {
@@ -4187,6 +4622,9 @@ window.pxiSvg = (function () {
       b.addEventListener('click', function () { setTab(b.getAttribute('data-goto')); });
     });
     $('btnSettings').addEventListener('click', openSettings);
+    if ($('syncPill')) $('syncPill').addEventListener('click', syncNow);
+    if ($('syncNowBtn')) $('syncNowBtn').addEventListener('click', syncNow);
+    if ($('syncLinkBtn')) $('syncLinkBtn').addEventListener('click', syncCopyLink);
     $('settingsClose').addEventListener('click', closeSettings);
     $('settingsModal').addEventListener('click', function (e) { if (e.target === $('settingsModal')) closeSettings(); });
     $('goldenBtn').addEventListener('click', openDraw);
@@ -4467,6 +4905,7 @@ window.pxiSvg = (function () {
     setInterval(tickClock, 1000);
     setInterval(checkDayChange, 30000);
     loadWeather();
+    syncInit();
     if (window.matchMedia) {
       try {
         var mq = window.matchMedia('(orientation: portrait)');
